@@ -28,7 +28,9 @@ const AUTH_TOKEN = "una_2026"
 
 type Event struct {
 	Type string `json:"type"`
-	Data string `json:"data"`
+	Data string `json:"data,omitempty"`
+	Cols int    `json:"cols,omitempty"`
+	Rows int    `json:"rows,omitempty"`
 	Time int64  `json:"time"`
 }
 
@@ -106,9 +108,13 @@ func replay(path string) {
 
 func record(port string, live bool) {
 	if live {
+		http.HandleFunc("/ws", ws_handler)
+		go http.ListenAndServe(":" + port, nil)
+
 		go func() {
-			http.HandleFunc("/ws", ws_handler)
-			http.ListenAndServe(":"+port, nil)
+			for range time.Tick(30 * time.Second) {
+				broadcast(Event{Type: "ping", Time: time.Now().UnixNano()}, true)
+			}
 		}()
 	}
 
@@ -142,6 +148,8 @@ func record(port string, live bool) {
 	go func() {
 		for range ch {
 			pty.InheritSize(os.Stdin, ptmx)
+			w, h, _ := term.GetSize(int(os.Stdin.Fd()))
+			broadcast(Event{Type: "resize", Cols: w, Rows: h, Time: time.Now().UnixNano()}, live)
 		}
 	}()
 	ch <- syscall.SIGWINCH
@@ -181,6 +189,17 @@ func record(port string, live bool) {
 	<-done
 }
 
+func list_recordings_handler(w http.ResponseWriter, r *http.Request) {
+    files, _ := os.ReadDir(UPLOAD_DIR)
+    var list []string
+    for _, f := range files {
+        if !f.IsDir() {
+            list = append(list, f.Name())
+        }
+    }
+    json.NewEncoder(w).Encode(list)
+}
+
 func server(port string) {
 	mux := http.NewServeMux()
 
@@ -204,6 +223,7 @@ func server(port string) {
 
 	mux.Handle("/recordings/", http.StripPrefix("/recordings/", http.FileServer(http.Dir(UPLOAD_DIR))))
 	mux.HandleFunc("/upload", HandleUpload)
+	mux.HandleFunc("/list", list_recordings_handler)
 
 	log.Printf("Server starting on: 0.0.0.0:" + port)
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+ port, mux))
