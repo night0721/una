@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Una | Replay</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+	<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<header>
+    <a href="/" class="logo">UNA // REPLAY</a>
+    <div id="session-info" style="font-size: 0.8rem; color: var(--text-muted);">Session: <span id="session-id">...</span></div>
+</header>
+
+<div id="viewport">
+    <div id="term-wrapper">
+        <div id="terminal"></div>
+    </div>
+
+    <div id="controls">
+        <div class="seek-bar" id="seek-container">
+            <div id="progress"></div>
+        </div>
+        <div class="btn-group">
+            <button id="play-pause">PAUSE</button>
+            <button id="restart">RESTART</button>
+
+            <select id="speed-select">
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1.0x</option>
+                <option value="2">2.0x</option>
+                <option value="4">4.0x</option>
+            </select>
+
+            <div class="time-display">
+                <span id="current-time">00:00</span> / <span id="total-time">00:00</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script>
+    const term = new Terminal({
+        theme: { background: '#000', foreground: '#efeff1' },
+        cursorBlink: true,
+        fontFamily: '"Fira Code", monospace',
+        fontSize: 14,
+    });
+    term.open(document.getElementById('terminal'));
+
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    document.getElementById('session-id').innerText = id || "Unknown";
+
+    let events = [];
+    let isPlaying = true;
+    let speed = 1;
+    let currentIndex = 0;
+    let timer = null;
+
+    async function loadRecording() {
+        if (!id) return;
+        const res = await fetch(`/recordings/${id}`);
+        const text = await res.text();
+        events = text.trim().split('\n').map(line => JSON.parse(line));
+
+        const duration = (events[events.length-1].time - events[0].time) / 1e9;
+        document.getElementById('total-time').innerText = formatTime(duration);
+
+        play();
+    }
+
+    function formatTime(sec) {
+        const m = Math.floor(sec / 60).toString().padStart(2, '0');
+        const s = Math.floor(sec % 60).toString().padStart(2, '0');
+        return `${m}:${s}`;
+    }
+
+    async function play() {
+        if (!isPlaying || currentIndex >= events.length) return;
+
+        const ev = events[currentIndex];
+        if (ev.type === 'output') {
+            term.write(ev.data);
+        }
+
+        // Calculate progress
+        const elapsed = (events[currentIndex].time - events[0].time) / 1e9;
+        const total = (events[events.length-1].time - events[0].time) / 1e9;
+        document.getElementById('progress').style.width = `${(elapsed / total) * 100}%`;
+        document.getElementById('current-time').innerText = formatTime(elapsed);
+
+        currentIndex++;
+
+        if (currentIndex < events.length) {
+            const nextDelay = (events[currentIndex].time - ev.time) / 1e6; // to ms
+            timer = setTimeout(play, nextDelay / speed);
+        }
+    }
+
+    // Controls Logic
+    document.getElementById('play-pause').onclick = (e) => {
+        isPlaying = !isPlaying;
+        e.target.innerText = isPlaying ? "PAUSE" : "PLAY";
+        if (isPlaying) play();
+        else clearTimeout(timer);
+    };
+
+    document.getElementById('restart').onclick = () => {
+        clearTimeout(timer);
+        term.reset();
+        currentIndex = 0;
+        isPlaying = true;
+        document.getElementById('play-pause').innerText = "PAUSE";
+        play();
+    };
+
+    document.getElementById('speed-select').onchange = (e) => {
+        speed = parseFloat(e.target.value);
+    };
+
+    // Simple Seek (Click on bar)
+    document.getElementById('seek-container').onclick = (e) => {
+        const rect = e.target.getBoundingClientRect();
+        const percent = (e.clientX - rect.left) / rect.width;
+
+        clearTimeout(timer);
+        term.reset();
+
+        const targetIndex = Math.floor(events.length * percent);
+        // Fast-forward terminal state to that point
+        for(let i=0; i < targetIndex; i++) {
+            if(events[i].type === 'output') term.write(events[i].data);
+        }
+        currentIndex = targetIndex;
+        play();
+    };
+
+    loadRecording();
+</script>
+</body>
+</html>
